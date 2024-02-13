@@ -1,4 +1,5 @@
-﻿using CacheFlow.Options;
+﻿using CacheFlow.Helpers;
+using CacheFlow.Options;
 using CacheFlow.Services;
 using Metalama.Extensions.DependencyInjection;
 using Metalama.Framework.Aspects;
@@ -7,8 +8,7 @@ using Metalama.Framework.Code.SyntaxBuilders;
 
 namespace CacheFlow.Attributes;
 
-[AttributeUsage(AttributeTargets.Method)]
-[Inheritable]
+[AttributeUsage(AttributeTargets.Method, Inherited = false)]
 public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<INamedType>
 {
     [IntroduceDependency]
@@ -55,19 +55,13 @@ public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<I
     [Template]
     private async void InvalidateCacheForReferenceTypeAsync(string hashKey, IParameter parameter)
     {
-        var parameterProperties = parameter.DeclaringAssembly.ReferencedAssemblies
-            .FirstOrDefault(assembly => assembly.Types.Contains(parameter.Type))
-            ?.Types
-            .SelectMany(type => type.Properties)
-            .Where(property => property.DeclaringType.Is(parameter.Type));
+        var parameterProperties = TypeAnalyzer.GetReturnPropertiesFromReferencedAssemblies(parameter.Type)
+                                  ?? TypeAnalyzer.GetReturnProperties(parameter.Type);
 
 
-        if (parameterProperties is not null)
+        foreach (var property in parameterProperties)
         {
-            foreach (var property in parameterProperties)
-            {
-                HandlePropertyCacheInvalidationAsync(parameter, property);
-            }
+            HandlePropertyCacheInvalidationAsync(parameter, property);
         }
 
         await _cacheService.HashRemoveAsync(hashKey, parameter.Value!.Id.ToString()).ConfigureAwait(false);
@@ -83,8 +77,8 @@ public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<I
             InvalidateCacheForIdPropertyAsync(expressionBuilder, parameter, property);
         }
         else if (property.Type.IsReferenceType is true
-            && !property.Type.Is(SpecialType.IEnumerable_T, ConversionKind.TypeDefinition)
-            && property.Type.TypeKind != TypeKind.Array)
+                 && !TypeAnalyzer.IsEnumerableType(property.Type)
+                 && property.Type.TypeKind != TypeKind.Array)
         {
             InvalidateCacheForReferencePropertyAsync(expressionBuilder, parameter, property);
         }
@@ -98,7 +92,7 @@ public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<I
         expressionBuilder.AppendVerbatim(".");
         expressionBuilder.AppendVerbatim(property.Name);
 
-        dynamic? id = expressionBuilder.ToValue()?.ToString();
+        string id = expressionBuilder.ToValue()!.ToString();
         int indexOfId = property.Name.IndexOf("Id", StringComparison.Ordinal);
 
         await _cacheService.HashRemoveAsync(property.Name[..indexOfId], id).ConfigureAwait(false);
@@ -113,21 +107,19 @@ public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<I
             .SelectMany(type => type.Properties)
             .FirstOrDefault(prop => prop.Name.Equals("Id", StringComparison.Ordinal));
 
-        if (idProperty is null)
+        if (idProperty is not null)
         {
-            return;
+            expressionBuilder.AppendVerbatim(parameter.Name);
+            expressionBuilder.AppendVerbatim(".");
+            expressionBuilder.AppendVerbatim(property.Name);
+            expressionBuilder.AppendVerbatim(".");
+            expressionBuilder.AppendVerbatim(idProperty.Name);
+
+            string id = expressionBuilder.ToValue()!.ToString();
+
+            await _cacheService.HashRemoveAsync(property.Name, id).ConfigureAwait(false);
+            await _cacheService.HashRemoveAsync(property.Name, "all").ConfigureAwait(false);
         }
-
-        expressionBuilder.AppendVerbatim(parameter.Name);
-        expressionBuilder.AppendVerbatim(".");
-        expressionBuilder.AppendVerbatim(property.Name);
-        expressionBuilder.AppendVerbatim(".");
-        expressionBuilder.AppendVerbatim(idProperty.Name);
-
-        dynamic? id = expressionBuilder.ToValue()?.ToString();
-
-        await _cacheService.HashRemoveAsync(property.Name, id).ConfigureAwait(false);
-        await _cacheService.HashRemoveAsync(property.Name, "all").ConfigureAwait(false);
     }
 
     public override dynamic? OverrideMethod()
