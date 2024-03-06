@@ -15,7 +15,7 @@ internal static class CacheKeyBuilder
         parameter = parameter is null || parameter.Type.Is(typeof(CancellationToken))
             ? null
             : parameter;
-        
+
         stringBuilder.AddExpression(parameter?.Value ?? "all");
         return stringBuilder;
     }

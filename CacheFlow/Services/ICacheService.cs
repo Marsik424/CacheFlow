@@ -2,7 +2,7 @@ namespace CacheFlow.Services;
 
 public interface ICacheService
 {
-    TEntity? HashScan<TEntity>(string hashKey, string pattern) where TEntity : class;
+    Task<dynamic?> HashScan(string hashKey, string pattern, Type type);
     
     Task<dynamic?> HashGetAsync(string hashKey, string key, Type type);
     

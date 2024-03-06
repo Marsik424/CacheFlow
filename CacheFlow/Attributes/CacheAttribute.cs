@@ -11,7 +11,7 @@ using Newtonsoft.Json;
 namespace CacheFlow.Attributes;
 
 [AttributeUsage(AttributeTargets.Method, Inherited = false)]
-public class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
+public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
 {
     [IntroduceDependency]
     private readonly ICacheService _cacheService = null!;
@@ -31,14 +31,24 @@ public class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
         string hashKey = TypeAnalyzer.IsEnumerableType(taskResultType)
             ? resultType.GetGenericArguments()[0].Name
             : resultType.Name;
-
-        dynamic? result = await _cacheService.HashGetAsync(hashKey, key, resultType);
+        
+        dynamic? result = cacheOptions.UseReferenceCacheInvalidation ?
+            !TypeAnalyzer.IsEnumerableType(taskResultType)
+                ? await _cacheService.HashScan(hashKey, $"*{key}*", resultType)
+                : await _cacheService.HashGetAsync(hashKey, "all", resultType)
+            : await _cacheService.HashGetAsync(hashKey, key, resultType);
+        
         if (result is not null)
         {
             return result;
         }
 
         dynamic? methodResponse = await meta.ProceedAsync();
+        if (methodResponse is null)
+        {
+            return methodResponse;
+        }
+        
         if (!TypeAnalyzer.IsEnumerableType(taskResultType))
         {
             var stringBuilder = new InterpolatedStringBuilder();
@@ -60,7 +70,7 @@ public class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
     }
     
     [Template]
-    private void BuildComplexKey(InterpolatedStringBuilder stringBuilder ,string key, dynamic methodResponse, IType taskResultType)
+    private void BuildComplexKey(InterpolatedStringBuilder stringBuilder, string key, dynamic methodResponse, IType taskResultType)
     {
         var returnProperties = TypeAnalyzer.GetReturnProperties(taskResultType);
         stringBuilder.AddExpression(key);
@@ -72,8 +82,9 @@ public class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
     }
     
     [Template]
-    private static void AppendPropertyToKey(InterpolatedStringBuilder stringBuilder, dynamic methodResponse, IProperty property)
+    private void AppendPropertyToKey(InterpolatedStringBuilder stringBuilder, dynamic methodResponse, IProperty property)
     {
+        var cacheOptions = meta.Target.Method.DeclaringAssembly.GlobalNamespace.Enhancements().GetOptions<CacheOptionsAttribute>();
         if (property.Name.IndexOf("Id", StringComparison.Ordinal) > 0)
         {
             AppendIdFromExplicitProperty(stringBuilder, methodResponse, property);
@@ -81,10 +92,18 @@ public class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
         else if (TypeAnalyzer.IsEnumerableType(property.Type) && !property.Type.Is(SpecialType.String))
         {
             AppendArrayKey(stringBuilder, property);
+            if (cacheOptions.UseReferenceCacheInvalidation)
+            {
+                GenerateCacheValueForArrayType(methodResponse, property);
+            }
         }
-        else if (property.Type.IsReferenceType is true && !property.Name.Equals("Id") )
+        else if (property.Type.IsReferenceType is true && !property.Name.Equals("Id") && !property.Type.Is(SpecialType.String))
         {
             AppendIdFromReferenceProperty(stringBuilder, methodResponse, property);
+            if (cacheOptions.UseReferenceCacheInvalidation)
+            {
+                GenerateCacheValueForReferenceProperty(methodResponse, property);
+            }
         }
     }
 
@@ -114,19 +133,61 @@ public class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
     {
         var properties = TypeAnalyzer.GetReturnProperties(property.Type);
         var idProperty = properties.FirstOrDefault(prop => prop.Name.Equals("Id"));
-        if (idProperty is not null)
+        if (idProperty is null)
         {
-            stringBuilder.AddText("-");
-            var expressionBuilder = new ExpressionBuilder();
-        
-            expressionBuilder.AppendExpression(methodResponse);
-            expressionBuilder.AppendVerbatim(".");
-            expressionBuilder.AppendVerbatim(property.Name);
-            expressionBuilder.AppendVerbatim(".");
-            expressionBuilder.AppendVerbatim("Id");
-        
-            stringBuilder.AddExpression(expressionBuilder.ToValue());   
+            return;
         }
+
+        stringBuilder.AddText("-");
+        var expressionBuilder = new ExpressionBuilder();
+        
+        expressionBuilder.AppendExpression(methodResponse);
+        expressionBuilder.AppendVerbatim(".");
+        expressionBuilder.AppendVerbatim(property.Name);
+        expressionBuilder.AppendVerbatim(".");
+        expressionBuilder.AppendVerbatim("Id");
+        
+        stringBuilder.AddExpression(expressionBuilder.ToValue());
+    }
+
+
+    [Template]
+    private async void GenerateCacheValueForArrayType(dynamic methodResponse, IProperty property)
+    {
+        var expressionBuilder = new ExpressionBuilder();
+        expressionBuilder.AppendExpression(methodResponse);
+        expressionBuilder.AppendVerbatim(".");
+        expressionBuilder.AppendVerbatim(property.Name);
+
+        dynamic? arrayProperty = expressionBuilder.ToValue();
+        await _cacheService.HashSetAsync(property.Name, "all", JsonConvert.SerializeObject(arrayProperty));
+    }
+
+    [Template]
+    private async void GenerateCacheValueForReferenceProperty(dynamic methodResponse, IProperty property)
+    {
+        var expressionBuilder = new ExpressionBuilder();
+        expressionBuilder.AppendExpression(methodResponse);
+        expressionBuilder.AppendVerbatim(".");
+        expressionBuilder.AppendVerbatim(property.Name);
+        
+        dynamic propertyValue = expressionBuilder.ToValue()!;
+        var interpolatedStringBuilder = new InterpolatedStringBuilder();
+        interpolatedStringBuilder.AddExpression(methodResponse.Id.ToString());
+        interpolatedStringBuilder.AddText("-");
+        
+        expressionBuilder = new ExpressionBuilder();
+        expressionBuilder.AppendExpression(propertyValue);
+        expressionBuilder.AppendVerbatim(".");
+        expressionBuilder.AppendVerbatim("Id");
+
+        string propertyId = expressionBuilder.ToValue()!.ToString();
+        BuildComplexKey(interpolatedStringBuilder, propertyId, propertyValue, property.Type);
+
+        string complexKey = interpolatedStringBuilder.ToValue();
+        
+        await _cacheService.HashRemoveAllAsync(property.Name, $"*{propertyId}*").ConfigureAwait(false);
+        await _cacheService.HashSetAsync(property.Name, complexKey, JsonConvert.SerializeObject(propertyValue));
     }
 
 }

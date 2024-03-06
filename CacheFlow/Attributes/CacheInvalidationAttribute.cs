@@ -23,20 +23,25 @@ public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<I
         {
             return methodResponse;
         }
-
-        HandleRepositoryCacheInvalidation();
+        
+        HandleRepositoryCacheInvalidation(cacheOptions.UseReferenceCacheInvalidation);
         return methodResponse;
     }
-
+    
     [Template]
-    private void HandleRepositoryCacheInvalidation()
+    private void HandleRepositoryCacheInvalidation(bool useReferenceHandler)
     {
         int repositoryIndex = meta.Target.Method.DeclaringType.Name.IndexOf("Repository", StringComparison.Ordinal);
         var parameter = meta.Target.Method.Parameters[0];
         string hashKey = meta.Target.Method.DeclaringType.Name[..repositoryIndex];
-
+        
         if (parameter.Type.Is(SpecialType.String) || parameter.Type.Is(typeof(Guid)))
         {
+            if (useReferenceHandler)
+            {
+                InvalidateCacheUsingReferenceHandler(hashKey, parameter);
+            }
+            
             InvalidateCacheForSimpleParameterAsync(hashKey, parameter);
         }
         else if (parameter.Type.IsReferenceType is true)
@@ -44,49 +49,96 @@ public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<I
             InvalidateCacheForReferenceTypeAsync(hashKey, parameter);
         }
     }
-
+    
     [Template]
-    private async void InvalidateCacheForSimpleParameterAsync(string hashKey, IParameter parameter)
+    private async void InvalidateCacheForSimpleParameterAsync([CompileTime] string hashKey, IParameter parameter)
     {
         await _cacheService.HashRemoveAsync(hashKey, parameter.Value!.ToString()).ConfigureAwait(false);
         await _cacheService.HashRemoveAsync(hashKey, "all").ConfigureAwait(false);
     }
 
     [Template]
+    private async void InvalidateCacheUsingReferenceHandler([CompileTime] string hashKey, IParameter parameter)
+    {        
+        var propertyToInvalidate = meta.Target.Method.Compilation.GlobalNamespace
+            .DescendantsAndSelf()
+            .Where(ns => ns.FullName.Contains("Models"))
+            .SelectMany(ns => ns.Types)
+            .FirstOrDefault(type => type.FullName.Contains(hashKey));
+
+        if (propertyToInvalidate is null)
+        {
+            return;
+        }
+
+        var referenceProperties = propertyToInvalidate.Properties
+            .Where(property => property.Type.IsReferenceType == true
+                               && !property.Type.Is(SpecialType.String));
+
+        string propertyKeyPattern = $"*{parameter.Value}*";
+        string arrayKeyPattern = $"*{hashKey}*";
+        
+        foreach (var property in referenceProperties)
+        {
+            string propertyHashKey = TypeAnalyzer.IsEnumerableType(property.Type)
+                ? property.Type.ToType().GetGenericArguments()[0].Name
+                : property.Name;
+            
+            await _cacheService.HashRemoveAllAsync(propertyHashKey, propertyKeyPattern).ConfigureAwait(false);
+            await _cacheService.HashRemoveAllAsync(propertyHashKey, arrayKeyPattern).ConfigureAwait(false);
+            await _cacheService.HashRemoveAsync(propertyHashKey, "all").ConfigureAwait(false);
+        }
+
+        await _cacheService.HashRemoveAllAsync(hashKey, propertyKeyPattern).ConfigureAwait(false);
+        await _cacheService.HashRemoveAsync(hashKey, "all").ConfigureAwait(false);
+    }
+    
+    
+    [Template]
     private async void InvalidateCacheForReferenceTypeAsync(string hashKey, IParameter parameter)
     {
         var parameterProperties = TypeAnalyzer.GetReturnPropertiesFromReferencedAssemblies(parameter.Type)
                                   ?? TypeAnalyzer.GetReturnProperties(parameter.Type);
-
-
+        
+        var cacheOptions = meta.Target.Method.DeclaringAssembly.GlobalNamespace.Enhancements().GetOptions<CacheOptionsAttribute>();
         foreach (var property in parameterProperties)
         {
-            HandlePropertyCacheInvalidationAsync(parameter, property);
+            HandlePropertyCacheInvalidationAsync(parameter, property, cacheOptions.UseReferenceCacheInvalidation);
         }
 
-        await _cacheService.HashRemoveAsync(hashKey, parameter.Value!.Id.ToString()).ConfigureAwait(false);
-        await _cacheService.HashRemoveAsync(hashKey, "all").ConfigureAwait(false);
+        string parameterId = parameter.Value!.ToString();
+        if (cacheOptions.UseReferenceCacheInvalidation)
+        {
+            await _cacheService.HashRemoveAllAsync(hashKey, $"*{parameterId}*").ConfigureAwait(false);
+            await _cacheService.HashRemoveAsync(hashKey, "all").ConfigureAwait(false);
+        }
+        else
+        {
+            await _cacheService.HashRemoveAsync(hashKey, parameterId).ConfigureAwait(false);
+            await _cacheService.HashRemoveAsync(hashKey, "all").ConfigureAwait(false);
+        }
     }
-
+    
     [Template]
-    private void HandlePropertyCacheInvalidationAsync(IParameter parameter, IProperty property)
+    private void HandlePropertyCacheInvalidationAsync(IParameter parameter, IProperty property, bool useReferenceHandler = false)
     {
         var expressionBuilder = new ExpressionBuilder();
+        
         if (property.Name.IndexOf("Id", StringComparison.Ordinal) > 0)
         {
-            InvalidateCacheForIdPropertyAsync(expressionBuilder, parameter, property);
+            InvalidateCacheForIdPropertyAsync(expressionBuilder, parameter, property, useReferenceHandler);
         }
         else if (property.Type.IsReferenceType is true
                  && !TypeAnalyzer.IsEnumerableType(property.Type)
                  && property.Type.TypeKind != TypeKind.Array)
         {
-            InvalidateCacheForReferencePropertyAsync(expressionBuilder, parameter, property);
+            InvalidateCacheForReferencePropertyAsync(expressionBuilder, parameter, property, useReferenceHandler);
         }
     }
 
     [Template]
-    private async void InvalidateCacheForIdPropertyAsync(ExpressionBuilder expressionBuilder, IParameter parameter,
-        IProperty property)
+    private async void InvalidateCacheForIdPropertyAsync(ExpressionBuilder expressionBuilder, IParameter parameter, 
+        IProperty property, bool useReferenceHandler = false)
     {
         expressionBuilder.AppendVerbatim(parameter.Name);
         expressionBuilder.AppendVerbatim(".");
@@ -94,32 +146,53 @@ public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<I
 
         string id = expressionBuilder.ToValue()!.ToString();
         int indexOfId = property.Name.IndexOf("Id", StringComparison.Ordinal);
-
-        await _cacheService.HashRemoveAsync(property.Name[..indexOfId], id).ConfigureAwait(false);
-        await _cacheService.HashRemoveAsync(property.Name[..indexOfId], "all").ConfigureAwait(false);
+        if (useReferenceHandler)
+        {
+            await _cacheService.HashRemoveAllAsync(property.Name[..indexOfId], $"*{id}*").ConfigureAwait(false);
+            await _cacheService.HashRemoveAllAsync(property.Name[..indexOfId], $"*{parameter.Type}*").ConfigureAwait(false);
+            await _cacheService.HashRemoveAsync(property.Name[..indexOfId], "all").ConfigureAwait(false);
+        }
+        else
+        {
+            await _cacheService.HashRemoveAsync(property.Name[..indexOfId], id).ConfigureAwait(false);
+            await _cacheService.HashRemoveAsync(property.Name[..indexOfId], "all").ConfigureAwait(false);
+        }
+        
     }
 
     [Template]
     private async void InvalidateCacheForReferencePropertyAsync(ExpressionBuilder expressionBuilder, IParameter parameter,
-        IProperty property)
+        IProperty property, bool useReferenceHandler = false)
     {
         var idProperty = property.Compilation.Types
             .SelectMany(type => type.Properties)
             .FirstOrDefault(prop => prop.Name.Equals("Id", StringComparison.Ordinal));
 
-        if (idProperty is not null)
+        if (idProperty is null)
         {
-            expressionBuilder.AppendVerbatim(parameter.Name);
-            expressionBuilder.AppendVerbatim(".");
-            expressionBuilder.AppendVerbatim(property.Name);
-            expressionBuilder.AppendVerbatim(".");
-            expressionBuilder.AppendVerbatim(idProperty.Name);
+            return;
+        }
 
-            string id = expressionBuilder.ToValue()!.ToString();
+        expressionBuilder.AppendVerbatim(parameter.Name);
+        expressionBuilder.AppendVerbatim(".");
+        expressionBuilder.AppendVerbatim(property.Name);
+        expressionBuilder.AppendVerbatim(".");
+        expressionBuilder.AppendVerbatim(idProperty.Name);
 
+        string id = expressionBuilder.ToValue()!.ToString();
+        if (useReferenceHandler)
+        {
+            await _cacheService.HashRemoveAllAsync(property.Name, $"*{id}*").ConfigureAwait(false);
+            await _cacheService.HashRemoveAllAsync(property.Name, $"*{parameter.Type}*").ConfigureAwait(false);
+            await _cacheService.HashRemoveAsync(property.Name, "all").ConfigureAwait(false);
+            
+        }
+        else
+        {
             await _cacheService.HashRemoveAsync(property.Name, id).ConfigureAwait(false);
             await _cacheService.HashRemoveAsync(property.Name, "all").ConfigureAwait(false);
         }
+        
     }
 
     public override dynamic? OverrideMethod()

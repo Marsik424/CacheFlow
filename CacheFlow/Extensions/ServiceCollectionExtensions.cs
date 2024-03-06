@@ -18,16 +18,16 @@ public static class ServiceCollectionExtensions
             .Configure(settings => { settings.ExpireTime = cacheExpireTime; });
         
         return services
-            .AddConnectionMultiplexer(redisConnectionString, serviceLifetime)
+            .AddConnectionMultiplexer(redisConnectionString, ServiceLifetime.Singleton)
             .AddCacheService(serviceLifetime);
     }
 
     public static IServiceCollection AddCacheService(
         this IServiceCollection services,
-        Action<CacheServiceBuilder> options = null!)
+        Action<CacheServiceBuilder>? options = null!)
     {
         var builder = new CacheServiceBuilder();
-        options.Invoke(builder);
+        options?.Invoke(builder);
 
         return services.AddCacheService(builder.ExpireTime, builder.ConnectionString, builder.ServiceLifetime);
     }
@@ -35,12 +35,11 @@ public static class ServiceCollectionExtensions
     private static IServiceCollection AddConnectionMultiplexer(this IServiceCollection services, string connectionString,
         ServiceLifetime serviceLifetime)
     {
-        var connectionMultiplexer = ConnectionMultiplexer.Connect(connectionString);
         return serviceLifetime switch
         {
-            ServiceLifetime.Singleton => services.AddSingleton<IConnectionMultiplexer>(_ => connectionMultiplexer),
-            ServiceLifetime.Scoped => services.AddScoped<IConnectionMultiplexer>(_ => connectionMultiplexer),
-            ServiceLifetime.Transient => services.AddTransient<IConnectionMultiplexer>(_ => connectionMultiplexer),
+            ServiceLifetime.Singleton => services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(connectionString)),
+            ServiceLifetime.Scoped => services.AddScoped<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(connectionString)),
+            ServiceLifetime.Transient => services.AddTransient<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(connectionString)),
             _ => throw new ArgumentOutOfRangeException(nameof(serviceLifetime), serviceLifetime, null)
         };
     }

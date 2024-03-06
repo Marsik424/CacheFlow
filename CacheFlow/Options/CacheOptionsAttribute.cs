@@ -8,10 +8,12 @@ namespace CacheFlow.Options;
 public sealed class CacheOptionsAttribute : Attribute, IHierarchicalOptions<IMethod>, IProjectService, IHierarchicalOptions<IDeclaration>, IHierarchicalOptionsProvider
 {
     public bool UseRepositoryInterception { get; init; }
+    
+    public bool UseReferenceCacheInvalidation { get; init; }
 
     public IEnumerable<IHierarchicalOptions> GetOptions(in OptionsProviderContext context)
     {
-        return new[] { new CacheOptionsAttribute { UseRepositoryInterception = UseRepositoryInterception} };
+        return new[] { new CacheOptionsAttribute { UseRepositoryInterception = UseRepositoryInterception, UseReferenceCacheInvalidation = UseReferenceCacheInvalidation} };
     }
 
     public object ApplyChanges(object changes, in ApplyChangesContext context)
@@ -20,7 +22,8 @@ public sealed class CacheOptionsAttribute : Attribute, IHierarchicalOptions<IMet
 
         return new CacheOptionsAttribute
         {
-            UseRepositoryInterception = other.UseRepositoryInterception
+            UseRepositoryInterception = other.UseRepositoryInterception,
+            UseReferenceCacheInvalidation = other.UseReferenceCacheInvalidation
         };
     }
 }

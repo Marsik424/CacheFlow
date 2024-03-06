@@ -1,4 +1,5 @@
 using CacheFlow.Settings;
+using Metalama.Framework.RunTime;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using StackExchange.Redis;
@@ -16,16 +17,14 @@ internal sealed class CacheService : ICacheService
         _redisDatabase = connectionMultiplexer.GetDatabase();
     }
 
-    public TEntity? HashScan<TEntity>(string hashKey, string pattern) where TEntity : class
+    public async Task<dynamic?> HashScan(string hashKey, string pattern, Type type)
     {
-        var entry = _redisDatabase.HashScanAsync(hashKey, pattern).ToBlockingEnumerable().FirstOrDefault();
-        if (entry.Value.IsNullOrEmpty)
-        {
-            return null;
-        }
+        var entry = _redisDatabase.HashScanAsync(hashKey, pattern);
+        var result = await entry.BufferAsync();
 
-        return entry.Value.HasValue
-            ? JsonConvert.DeserializeObject<TEntity>(entry.Value!)
+        string redisValue = result.FirstOrDefault().Value!;
+        return result.Count > 0
+            ? JsonConvert.DeserializeObject(redisValue, type)
             : null;
     }
     
@@ -83,7 +82,7 @@ internal sealed class CacheService : ICacheService
         var keys = _redisDatabase.HashScanAsync(hashKey, pattern);
         await foreach (var cacheKey in keys)
         {
-            await _redisDatabase.HashDeleteAsync(hashKey, cacheKey.Value);
+            await _redisDatabase.HashDeleteAsync(hashKey, cacheKey.Name);
         }
     }
     
