@@ -72,7 +72,8 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
     [Template]
     private void BuildComplexKey(InterpolatedStringBuilder stringBuilder, string key, dynamic methodResponse, IType taskResultType)
     {
-        var returnProperties = TypeAnalyzer.GetReturnProperties(taskResultType);
+        var returnProperties = TypeAnalyzer.GetReturnPropertiesFromReferencedAssemblies(taskResultType)
+            ?? TypeAnalyzer.GetReturnProperties(taskResultType);
         stringBuilder.AddExpression(key);
 
         foreach (var property in returnProperties)
@@ -108,7 +109,7 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
     }
 
     [Template]
-    private static void AppendIdFromExplicitProperty(InterpolatedStringBuilder stringBuilder, dynamic methodResponse, IProperty property)
+    private void AppendIdFromExplicitProperty(InterpolatedStringBuilder stringBuilder, dynamic methodResponse, IProperty property)
     {
         stringBuilder.AddText("-");
         var expressionBuilder = new ExpressionBuilder();
@@ -116,7 +117,7 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
         expressionBuilder.AppendExpression(methodResponse);
         expressionBuilder.AppendVerbatim(".");
         expressionBuilder.AppendVerbatim(property.Name);
-        
+
         stringBuilder.AddExpression(expressionBuilder.ToValue());
     }
     
@@ -131,7 +132,9 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
     [Template]
     private static void AppendIdFromReferenceProperty(InterpolatedStringBuilder stringBuilder, dynamic methodResponse, IProperty property)
     {
-        var properties = TypeAnalyzer.GetReturnProperties(property.Type);
+        var properties = TypeAnalyzer.GetReturnPropertiesFromReferencedAssemblies(property.Type)
+            ?? TypeAnalyzer.GetReturnProperties(property.Type);
+        
         var idProperty = properties.FirstOrDefault(prop => prop.Name.Equals("Id"));
         if (idProperty is null)
         {
@@ -160,7 +163,7 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
         expressionBuilder.AppendVerbatim(property.Name);
 
         dynamic? arrayProperty = expressionBuilder.ToValue();
-        await _cacheService.HashSetAsync(property.Name, "all", JsonConvert.SerializeObject(arrayProperty));
+        await _cacheService.HashSetAsync(property.Name[..^1], "all", JsonConvert.SerializeObject(arrayProperty));
     }
 
     [Template]
