@@ -23,45 +23,47 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
         {
             return await meta.ProceedAsync();
         }
-
-        string key = CacheKeyBuilder.GetCachingKey().ToValue();
-        var taskResultType = meta.Target.Method.ReturnType.GetAsyncInfo().ResultType;
-
-        var resultType = taskResultType.ToType();
-        string hashKey = TypeAnalyzer.IsEnumerableType(taskResultType)
-            ? resultType.GetGenericArguments()[0].Name
-            : resultType.Name;
-        
-        dynamic? result = cacheOptions.UseReferenceCacheInvalidation ?
-            !TypeAnalyzer.IsEnumerableType(taskResultType)
-                ? await _cacheService.HashScan(hashKey, $"*{key}*", resultType)
-                : await _cacheService.HashGetAsync(hashKey, "all", resultType)
-            : await _cacheService.HashGetAsync(hashKey, key, resultType);
-        
-        if (result is not null)
+        else
         {
-            return result;
-        }
+            string key = CacheKeyBuilder.GetCachingKey().ToValue();
+            var taskResultType = meta.Target.Method.ReturnType.GetAsyncInfo().ResultType;
 
-        dynamic? methodResponse = await meta.ProceedAsync();
-        if (methodResponse is null)
-        {
-            return methodResponse;
-        }
+            var resultType = taskResultType.ToType();
+            string hashKey = TypeAnalyzer.IsEnumerableType(taskResultType)
+                ? resultType.GetGenericArguments()[0].Name
+                : resultType.Name;
         
-        if (!TypeAnalyzer.IsEnumerableType(taskResultType))
-        {
-            var stringBuilder = new InterpolatedStringBuilder();
-            BuildComplexKey(stringBuilder,key, methodResponse, taskResultType);
+            dynamic? result = cacheOptions.UseReferenceCacheInvalidation ?
+                !TypeAnalyzer.IsEnumerableType(taskResultType)
+                    ? await _cacheService.HashScan(hashKey, $"*{key}*", resultType)
+                    : await _cacheService.HashGetAsync(hashKey, "all", resultType)
+                : await _cacheService.HashGetAsync(hashKey, key, resultType);
+        
+            if (result is not null)
+            {
+                return result;
+            }
 
-            string complexKey = stringBuilder.ToValue();
-            await _cacheService.HashSetAsync(hashKey, complexKey, JsonConvert.SerializeObject(methodResponse));
+            dynamic? methodResponse = await meta.ProceedAsync();
+            if (methodResponse is null)
+            {
+                return methodResponse;
+            }
+        
+            if (!TypeAnalyzer.IsEnumerableType(taskResultType))
+            {
+                var stringBuilder = new InterpolatedStringBuilder();
+                BuildComplexKey(stringBuilder,key, methodResponse, taskResultType);
+
+                string complexKey = stringBuilder.ToValue();
+                await _cacheService.HashSetAsync(hashKey, complexKey, JsonConvert.SerializeObject(methodResponse));
             
+                return methodResponse;
+            }
+
+            await _cacheService.HashSetAsync(hashKey, key, JsonConvert.SerializeObject(methodResponse));
             return methodResponse;
         }
-
-        await _cacheService.HashSetAsync(hashKey, key, JsonConvert.SerializeObject(methodResponse));
-        return methodResponse;
     }
 
     public override dynamic? OverrideMethod()
@@ -98,7 +100,7 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
                 GenerateCacheValueForArrayType(methodResponse, property);
             }
         }
-        else if (property.Type.IsReferenceType is true && !property.Name.Equals("Id") && !property.Type.Is(SpecialType.String))
+        else if (property.Type.IsReferenceType is true && property.Type.TypeKind != TypeKind.Array && !property.Type.Is(SpecialType.String))
         {
             AppendIdFromReferenceProperty(stringBuilder, methodResponse, property);
             if (cacheOptions.UseReferenceCacheInvalidation)

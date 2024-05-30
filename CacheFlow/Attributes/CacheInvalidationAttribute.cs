@@ -19,12 +19,11 @@ public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<I
         dynamic? methodResponse = await meta.ProceedAsync();
 
         var cacheOptions = meta.Target.Method.DeclaringAssembly.GlobalNamespace.Enhancements().GetOptions<CacheOptionsAttribute>();
-        if (!cacheOptions.UseRepositoryInterception)
+        if (cacheOptions.UseRepositoryInterception)
         {
-            return methodResponse;
+            HandleRepositoryCacheInvalidation(cacheOptions.UseReferenceCacheInvalidation);
         }
         
-        HandleRepositoryCacheInvalidation(cacheOptions.UseReferenceCacheInvalidation);
         return methodResponse;
     }
     
@@ -78,7 +77,7 @@ public sealed class CacheInvalidationAttribute : OverrideMethodAspect, IAspect<I
         string arrayKeyPattern = $"*{hashKey}*";
         
         referenceProperties = referenceProperties.Where(property =>
-            (property.Type.IsReferenceType is true && !property.Type.Is(SpecialType.String)) || property.Type.Is(typeof(Guid)));
+            property.Type.IsReferenceType is true && !property.Type.Is(SpecialType.String) && !property.Type.Is(typeof(Guid)));
         
         foreach (var property in referenceProperties)
         {
