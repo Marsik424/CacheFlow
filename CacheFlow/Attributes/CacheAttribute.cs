@@ -18,7 +18,9 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
 
     public override async Task<dynamic?> OverrideAsyncMethod()
     {
-        var cacheOptions = meta.Target.Method.DeclaringAssembly.GlobalNamespace.Enhancements().GetOptions<CacheOptionsAttribute>();
+        var cacheOptions = meta.Target.Method.DeclaringAssembly.GlobalNamespace.Enhancements()
+            .GetOptions<CacheOptionsAttribute>();
+
         if (!cacheOptions.UseRepositoryInterception)
         {
             return await meta.ProceedAsync();
@@ -32,13 +34,13 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
             string hashKey = TypeAnalyzer.IsEnumerableType(taskResultType)
                 ? resultType.GetGenericArguments()[0].Name
                 : resultType.Name;
-        
-            dynamic? result = cacheOptions.UseReferenceCacheInvalidation ?
-                !TypeAnalyzer.IsEnumerableType(taskResultType)
+
+            dynamic? result = cacheOptions.UseReferenceCacheInvalidation
+                ? !TypeAnalyzer.IsEnumerableType(taskResultType)
                     ? await _cacheService.HashScan(hashKey, $"*{key}*", resultType)
                     : await _cacheService.HashGetAsync(hashKey, "all", resultType)
                 : await _cacheService.HashGetAsync(hashKey, key, resultType);
-        
+
             if (result is not null)
             {
                 return result;
@@ -49,15 +51,13 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
             {
                 return methodResponse;
             }
-        
-            if (!TypeAnalyzer.IsEnumerableType(taskResultType))
+
+            if (!TypeAnalyzer.IsEnumerableType(taskResultType) && cacheOptions.UseReferenceCacheInvalidation)
             {
                 var stringBuilder = new InterpolatedStringBuilder();
-                BuildComplexKey(stringBuilder,key, methodResponse, taskResultType);
+                BuildComplexKey(stringBuilder, key, methodResponse, taskResultType);
+                await _cacheService.HashSetAsync(hashKey, stringBuilder.ToValue(), JsonConvert.SerializeObject(methodResponse));
 
-                string complexKey = stringBuilder.ToValue();
-                await _cacheService.HashSetAsync(hashKey, complexKey, JsonConvert.SerializeObject(methodResponse));
-            
                 return methodResponse;
             }
 
@@ -70,12 +70,14 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
     {
         return meta.Proceed();
     }
-    
+
     [Template]
-    private void BuildComplexKey(InterpolatedStringBuilder stringBuilder, string key, dynamic methodResponse, IType taskResultType)
+    private void BuildComplexKey(InterpolatedStringBuilder stringBuilder, string key, dynamic methodResponse,
+        IType taskResultType)
     {
         var returnProperties = TypeAnalyzer.GetReturnPropertiesFromReferencedAssemblies(taskResultType)
-            ?? TypeAnalyzer.GetReturnProperties(taskResultType);
+                               ?? TypeAnalyzer.GetReturnProperties(taskResultType);
+
         stringBuilder.AddExpression(key);
 
         foreach (var property in returnProperties)
@@ -83,11 +85,13 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
             AppendPropertyToKey(stringBuilder, methodResponse, property);
         }
     }
-    
+
     [Template]
     private void AppendPropertyToKey(InterpolatedStringBuilder stringBuilder, dynamic methodResponse, IProperty property)
     {
-        var cacheOptions = meta.Target.Method.DeclaringAssembly.GlobalNamespace.Enhancements().GetOptions<CacheOptionsAttribute>();
+        var cacheOptions = meta.Target.Method.DeclaringAssembly.GlobalNamespace.Enhancements()
+            .GetOptions<CacheOptionsAttribute>();
+
         if (property.Name.IndexOf("Id", StringComparison.Ordinal) > 0)
         {
             AppendIdFromExplicitProperty(stringBuilder, methodResponse, property);
@@ -100,7 +104,8 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
                 GenerateCacheValueForArrayType(methodResponse, property);
             }
         }
-        else if (property.Type.IsReferenceType is true && property.Type.TypeKind != TypeKind.Array && !property.Type.Is(SpecialType.String))
+        else if (property.Type.IsReferenceType is true && property.Type.TypeKind != TypeKind.Array &&
+                 !property.Type.Is(SpecialType.String))
         {
             AppendIdFromReferenceProperty(stringBuilder, methodResponse, property);
             if (cacheOptions.UseReferenceCacheInvalidation)
@@ -115,14 +120,14 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
     {
         stringBuilder.AddText("-");
         var expressionBuilder = new ExpressionBuilder();
-        
+
         expressionBuilder.AppendExpression(methodResponse);
         expressionBuilder.AppendVerbatim(".");
         expressionBuilder.AppendVerbatim(property.Name);
 
         stringBuilder.AddExpression(expressionBuilder.ToValue());
     }
-    
+
     [Template]
     private static void AppendArrayKey(InterpolatedStringBuilder stringBuilder, IProperty property)
     {
@@ -132,11 +137,12 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
     }
 
     [Template]
-    private static void AppendIdFromReferenceProperty(InterpolatedStringBuilder stringBuilder, dynamic methodResponse, IProperty property)
+    private static void AppendIdFromReferenceProperty(InterpolatedStringBuilder stringBuilder, dynamic methodResponse,
+        IProperty property)
     {
         var properties = TypeAnalyzer.GetReturnPropertiesFromReferencedAssemblies(property.Type)
-            ?? TypeAnalyzer.GetReturnProperties(property.Type);
-        
+                         ?? TypeAnalyzer.GetReturnProperties(property.Type);
+
         var idProperty = properties.FirstOrDefault(prop => prop.Name.Equals("Id"));
         if (idProperty is null)
         {
@@ -145,16 +151,15 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
 
         stringBuilder.AddText("-");
         var expressionBuilder = new ExpressionBuilder();
-        
+
         expressionBuilder.AppendExpression(methodResponse);
         expressionBuilder.AppendVerbatim(".");
         expressionBuilder.AppendVerbatim(property.Name);
         expressionBuilder.AppendVerbatim(".");
         expressionBuilder.AppendVerbatim("Id");
-        
+
         stringBuilder.AddExpression(expressionBuilder.ToValue());
     }
-
 
     [Template]
     private async void GenerateCacheValueForArrayType(dynamic methodResponse, IProperty property)
@@ -175,12 +180,12 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
         expressionBuilder.AppendExpression(methodResponse);
         expressionBuilder.AppendVerbatim(".");
         expressionBuilder.AppendVerbatim(property.Name);
-        
+
         dynamic propertyValue = expressionBuilder.ToValue()!;
         var interpolatedStringBuilder = new InterpolatedStringBuilder();
         interpolatedStringBuilder.AddExpression(methodResponse.Id.ToString());
         interpolatedStringBuilder.AddText("-");
-        
+
         expressionBuilder = new ExpressionBuilder();
         expressionBuilder.AppendExpression(propertyValue);
         expressionBuilder.AppendVerbatim(".");
@@ -190,7 +195,7 @@ public sealed class CacheAttribute : OverrideMethodAspect, IAspect<INamedType>
         BuildComplexKey(interpolatedStringBuilder, propertyId, propertyValue, property.Type);
 
         string complexKey = interpolatedStringBuilder.ToValue();
-        
+
         await _cacheService.HashRemoveAllAsync(property.Name, $"*{propertyId}*").ConfigureAwait(false);
         await _cacheService.HashSetAsync(property.Name, complexKey, JsonConvert.SerializeObject(propertyValue));
     }
